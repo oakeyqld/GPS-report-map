@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>團隊位置即時分佈地圖</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body, html {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    #app-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+    }
+
+    /* 頂部操作列 */
+    header {
+      background: #ffffff;
+      padding: 12px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+      z-index: 1000;
+    }
+
+    .title-area h1 {
+      font-size: 1.15rem;
+      color: #1e293b;
+      font-weight: 700;
+    }
+
+    .filter-area {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    select, button {
+      padding: 8px 12px;
+      font-size: 0.9rem;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #334155;
+      outline: none;
+    }
+
+    select:focus {
+      border-color: #2563eb;
+    }
+
+    button {
+      background-color: #2563eb;
+      color: #ffffff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background-color: #1d4ed8;
+    }
+
+    /* 地圖容器 */
+    #map {
+      flex: 1;
+      width: 100%;
+      z-index: 1;
+    }
+
+    /* 標記彈出視窗樣式 */
+    .popup-content {
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .popup-title {
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 4px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 4px;
+    }
+    .popup-item {
+      color: #475569;
+    }
+
+    /* Loading 遮罩 */
+    #loading-overlay {
+      position: absolute;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      z-index: 1001;
+      pointer-events: none;
+      display: none;
+    }
+
+    @media (max-width: 600px) {
+      header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .filter-area {
+        width: 100%;
+      }
+      select {
+        flex: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="app-container">
+    <header>
+      <div class="title-area">
+        <h1>團隊位置即時地圖</h1>
+      </div>
+      <div class="filter-area">
+        <label for="team-select" style="font-size: 0.9rem; font-weight: 600;">團隊篩選：</label>
+        <select id="team-select">
+          <option value="ALL">全部團隊</option>
+        </select>
+        <button id="refresh-btn">重新整理</button>
+      </div>
+    </header>
+
+    <div id="loading-overlay">資料載入中...</div>
+    <div id="map"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwzwdZXXSXNCHxPNJKr53jp8uTuXiVzhT4BvfT28-L00bSUrpwA-ttQke4Vf0tcEyit/exec";
+
+    let map;
+    let markersLayer = L.layerGroup();
+    let allData = [];
+
+    // 初始化地圖（預設視角以台灣為中心）
+    function initMap() {
+      map = L.map("map").setView([23.8, 121.0], 7);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      }).addTo(map);
+
+      markersLayer.addTo(map);
+    }
+
+    // 顯示 / 隱藏 Loading
+    function showLoading(show, message = "資料載入中...") {
+      const overlay = document.getElementById("loading-overlay");
+      overlay.textContent = message;
+      overlay.style.display = show ? "block" : "none";
+    }
+
+    // 從 GAS 抓取試算表資料
+    async function loadData() {
+      showLoading(true, "連線取得資料中...");
+      try {
+        const response = await fetch(GAS_API_URL);
+        const data = await response.json();
+
+        if (Array.isArray(data)) {
+          allData = data;
+          updateTeamFilterOptions();
+          renderMarkers();
+        } else {
+          alert("讀取資料格式有誤");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("無法讀取資料，請確認 GAS 是否已佈署新版本且權限設為「所有人」。");
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    // 更新團隊下拉選單
+    function updateTeamFilterOptions() {
+      const select = document.getElementById("team-select");
+      const currentSelected = select.value;
+
+      // 取得不重複的團隊名稱
+      const teams = [...new Set(allData.map(item => item.teamCode).filter(Boolean))].sort();
+
+      select.innerHTML = '<option value="ALL">全部團隊</option>';
+      teams.forEach(team => {
+        const option = document.createElement("option");
+        option.value = team;
+        option.textContent = team;
+        select.appendChild(option);
+      });
+
+      // 保留先前的選擇
+      if (teams.includes(currentSelected)) {
+        select.value = currentSelected;
+      }
+    }
+
+    // 繪製座標標記
+    function renderMarkers() {
+      markersLayer.clearLayers();
+
+      const selectedTeam = document.getElementById("team-select").value;
+      const filtered = selectedTeam === "ALL" 
+        ? allData 
+        : allData.filter(item => item.teamCode === selectedTeam);
+
+      if (filtered.length === 0) {
+        return;
+      }
+
+      const latLngs = [];
+
+      filtered.forEach(point => {
+        const displayName = point.name ? point.name : "(未填寫姓名)";
+        const teamText = point.teamCode || "(無團隊編號)";
+
+        // 建立 Leaflet Marker
+        const marker = L.marker([point.latitude, point.longitude]);
+
+        // 設定 Permanent Tooltip（在地圖上直接顯示標籤：團隊編號 - 姓名）
+        marker.bindTooltip(`<b>[${escapeHtml(teamText)}]</b> ${escapeHtml(displayName)}`, {
+          permanent: true,
+          direction: "top",
+          offset: [0, -10]
+        });
+
+        // 點擊後顯示詳細 Popup
+        const popupContent = `
+          <div class="popup-content">
+            <div class="popup-title">${escapeHtml(displayName)}</div>
+            <div class="popup-item"><b>團隊：</b>${escapeHtml(teamText)}</div>
+            <div class="popup-item"><b>座標：</b>${point.latitude}, ${point.longitude}</div>
+            <div class="popup-item"><b>時間：</b>${escapeHtml(point.timestamp || "未知")}</div>
+          </div>
+        `;
+        marker.bindPopup(popupContent);
+
+        markersLayer.addLayer(marker);
+        latLngs.push([point.latitude, point.longitude]);
+      });
+
+      // 自動縮放與位移地圖，使所有標記落在可視範圍內
+      if (latLngs.length > 0) {
+        const bounds = L.latLngBounds(latLngs);
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+      }
+    }
+
+    // 簡易 XSS 防護
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    // 綁定事件
+    document.addEventListener("DOMContentLoaded", () => {
+      initMap();
+      loadData();
+
+      document.getElementById("team-select").addEventListener("change", renderMarkers);
+      document.getElementById("refresh-btn").addEventListener("click", loadData);
+    });
+  </script>
+</body>
+</html>
